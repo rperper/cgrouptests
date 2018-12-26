@@ -317,12 +317,176 @@ int gbus_linger(int enable_linger)
     return 0;
     
 }
+
+
+int bus_print_all_properties(const char *dest, const char *path) 
+{
+    GDBusProxy *proxy;
+    
+    memset(&bus, 0, sizeof(bus));
+    printf("Getting properties of %s, %s\n", dest, path);
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                               /* GDBusInterfaceInfo */
+                                  dest,                               /* name */
+                                  path,                               /* object path */
+                                  "org.freedesktop.DBus.Properties",  /* interface */
+                                  NULL,                               /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created secondary proxy connection\n");
+    char *fn = "GetAll";
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          g_variant_new("(s)",
+                                                        ""),
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else if (!(strcmp((char *)g_variant_get_type(rc), (char *)G_VARIANT_TYPE_STRING)))
+        printf("%s returned string: %s\n", fn, g_variant_get_data(rc));
+    else 
+        printf("%s returned a type %s\n", fn, g_variant_get_type(rc));
+    // I'll assume that the actual type is (a{sv})
+    int children;
+    int element;
+    GVariant *map = g_variant_get_child_value(rc, 0);
+    printf("%d elements, type: %s\n", children = g_variant_n_children(map),
+           g_variant_get_type(map));
+    for (element = 0; element < children; ++element)
+    {
+        GVariant *pair = g_variant_get_child_value(map, element);
+        printf("       child type[%d]: %s\n", element, g_variant_get_type(pair));
+        char *key;
+        GVariant *value;
+        const GVariantType *type;
+        char type_char;
+        g_variant_get(pair, "{sv}", &key, &value);
+        printf("          key: %s, type of value: %s\n", key, type = g_variant_get_type(value));
+        type_char = *(char *)type;
+        switch (type_char) 
+        {
+            case 'b':
+                {
+                    int my_int;
+                    g_variant_get(value, (char *)type, &my_int);
+                    printf("          value: %s\n", my_int ? "TRUE" : "FALSE");
+                }
+                break;
+            case 'y':
+                {
+                    unsigned char my_int;
+                    g_variant_get(value, (char *)type, &my_int);
+                    printf("          value: %u\n", my_int);
+                }
+                break;
+            case 'n':
+            case 'q':
+                {
+                    unsigned short my_int;
+                    g_variant_get(value, (char *)type, &my_int);
+                    printf("          value: %u\n", my_int);
+                }
+                break;
+            case 'i':
+            case 'u':
+            case 'h':
+                {
+                    unsigned int my_int;
+                    g_variant_get(value, (char *)type, &my_int);
+                    printf("          value: %u\n", my_int);
+                }
+                break;
+            case 'x':
+            case 't':
+                {
+                    unsigned long my_int;
+                    g_variant_get(value, (char *)type, &my_int);
+                    printf("          value: %lu\n", my_int);
+                }
+                break;
+            case 's'://*(char *)G_VARIANT_TYPE_STRING:
+            case 'o'://*(char *)G_VARIANT_TYPE_OBJECT_PATH:
+                {
+                    unsigned char *my_char;  
+                    g_variant_get(value, (char *)type, &my_char);
+                    printf("          value: %s\n", my_char);
+                }
+                break;
+            default:
+                {
+                    printf("          Type not handled\n");
+                }
+        }
+    }
+    return 0;
+}
+
+
+
+int gbus_getuser()
+{
+    printf("Did g_bus initial call (conn: %s), try to get the logind proxy\n", 
+           conn ? "NOT NULL" : "NULL");
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                               /* GDBusInterfaceInfo */
+                                  "org.freedesktop.login1",           /* name */
+                                  "/org/freedesktop/login1",          /* object path */
+                                  "org.freedesktop.login1.Manager",   /* interface */
+                                  NULL,                               /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+    char *fn = "GetUser";
+    printf("Call GetUser to get the path\n");
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          g_variant_new("(u)",
+                                                        uid),
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+    {
+        char *output_path;
+        g_variant_get(rc, "(o)", &output_path);
+        printf("Output path: %s\n", output_path);
+        return bus_print_all_properties("org.freedesktop.login1", output_path);
+    }
+    return 0;
+    
+}
+
+
 int main(int argc, char *argv[])
 {
     int opt;
     int linger = 0;
     int no_linger = 0;
     int start = 0;
+    int get_user = 0;
     
     printf("Test GDBus in my environment to see if it works as advertized\n");
     conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
@@ -335,7 +499,7 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "l:n:s?")) != -1)
+    while ((opt = getopt(argc, argv, "l:n:g:s?")) != -1)
     {
         switch (opt)
         {
@@ -349,12 +513,17 @@ int main(int argc, char *argv[])
                 uid = atoi(optarg);
                 printf("No linger for user: %u", uid);
                 break;
+            case 'g':
+                get_user = 1;
+                uid = atoi(optarg);
+                printf("Get user for: %u", uid);
+                break;
             case 's':
                 start = 1;
                 printf("Start transient unit\n");
                 break;
             default:
-                printf("gdbus [-linger <uid>] [-nolinger <uid>] [-starttransientunit]\n");
+                printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-starttransientunit]\n");
                 return 1;
         }
     }
@@ -362,6 +531,8 @@ int main(int argc, char *argv[])
         return gbus_systemd();
     if ((linger) || (no_linger))
         return gbus_linger(linger);
-    printf("You must specify an option (l, n, s)\n");
+    if (get_user)
+        return gbus_getuser();
+    printf("You must specify an option\n");
     return 1;
 }
