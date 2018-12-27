@@ -376,39 +376,39 @@ int bus_print_all_properties(const char *dest, const char *path)
         type_char = *(char *)type;
         switch (type_char) 
         {
-            case 'b':
+            case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
                 {
                     int my_int;
                     g_variant_get(value, (char *)type, &my_int);
                     printf("          value: %s\n", my_int ? "TRUE" : "FALSE");
                 }
                 break;
-            case 'y':
+            case 'y'://*(char *)G_VARIANT_TYPE_BYTE:
                 {
                     unsigned char my_int;
                     g_variant_get(value, (char *)type, &my_int);
                     printf("          value: %u\n", my_int);
                 }
                 break;
-            case 'n':
-            case 'q':
+            case 'n'://*(char *)G_VARIANT_TYPE_INT16:
+            case 'q'://*(char *)G_VARIANT_TYPE_UINT16:
                 {
                     unsigned short my_int;
                     g_variant_get(value, (char *)type, &my_int);
                     printf("          value: %u\n", my_int);
                 }
                 break;
-            case 'i':
-            case 'u':
-            case 'h':
+            case 'i'://*(char *)G_VARIANT_TYPE_INT64:
+            case 'u'://*(char *)G_VARIANT_TYPE_UINT32
+            case 'h'://*(char *)G_VARIANT_TYPE_HANDLE
                 {
                     unsigned int my_int;
                     g_variant_get(value, (char *)type, &my_int);
                     printf("          value: %u\n", my_int);
                 }
                 break;
-            case 'x':
-            case 't':
+            case 'x'://*(char *)G_VARIANT_TYPE_INT64:
+            case 't'://*(char *)G_VARIANT_TYPE_UINT64:
                 {
                     unsigned long my_int;
                     g_variant_get(value, (char *)type, &my_int);
@@ -436,8 +436,10 @@ int bus_print_all_properties(const char *dest, const char *path)
 
 int gbus_getuser()
 {
+    int finalrc = 1;
     printf("Did g_bus initial call (conn: %s), try to get the logind proxy\n", 
            conn ? "NOT NULL" : "NULL");
+    // This proxy is only used to get the path.
     proxy = g_dbus_proxy_new_sync(conn,
                                   G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
                                   NULL,                               /* GDBusInterfaceInfo */
@@ -473,10 +475,174 @@ int gbus_getuser()
         char *output_path;
         g_variant_get(rc, "(o)", &output_path);
         printf("Output path: %s\n", output_path);
-        return bus_print_all_properties("org.freedesktop.login1", output_path);
+        finalrc = bus_print_all_properties("org.freedesktop.login1", output_path);
     }
-    return 0;
+    g_object_unref(proxy);
+    return finalrc;
     
+}
+
+
+int gbus_getproperties()
+{
+    int finalrc = 1;
+    printf("Did g_bus initial call (conn: %s), try to get the unit properties\n", 
+           conn ? "NOT NULL" : "NULL");
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                                 /* GDBusInterfaceInfo */
+                                  "org.freedesktop.systemd1",           /* name */
+                                  "/org/freedesktop/systemd1",          /* object path */
+                                  "org.freedesktop.systemd1.Manager",   /* interface */
+                                  NULL,                                 /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+
+    char *fn = "GetUnit";
+    printf("Call GetUnit to get the path\n");
+    char unit[256];
+    sprintf(unit, "user-%u.slice", uid);
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          g_variant_new("(s)",
+                                                        unit),
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+    {
+        char *output_path;
+        g_variant_get(rc, "(o)", &output_path);
+        printf("Output path: %s\n", output_path);
+        finalrc = bus_print_all_properties("org.freedesktop.systemd1", output_path);
+    }
+    g_object_unref(proxy);
+    return finalrc;
+    
+}
+
+
+int gbus_setproperties(int argc, char *argv[])
+{
+    int finalrc = 1;
+    printf("Did g_bus initial call (conn: %s), try to get the unit properties\n", 
+           conn ? "NOT NULL" : "NULL");
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                                 /* GDBusInterfaceInfo */
+                                  "org.freedesktop.systemd1",           /* name */
+                                  "/org/freedesktop/systemd1",          /* object path */
+                                  "org.freedesktop.systemd1.Manager",   /* interface */
+                                  NULL,                                 /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+    char *fn = "SetUnitProperties";
+    printf("Call GetUnit to get the path\n");
+    char unit[256];
+    sprintf(unit, "user-%u.slice", uid);
+    printf("Building properties variant\n");
+    GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    int opt;
+    for (opt = optind; opt < argc; ++opt)
+    {
+        char param[1024];
+        char *equals1;
+        char *equals2;
+        char *name;
+        char type_char;
+        char *type;
+        char *value;
+        
+        strcpy(param, argv[opt]);
+        if ((!(equals1 = strchr(param, '='))) ||
+            (!(equals2 = strchr(equals1 + 1, '='))))
+        {
+            printf("Bad argument (missing double equals): %s\n", argv[opt]);
+            return 1;
+        }
+        *equals1 = 0;
+        *equals2 = 0;
+        name = param;
+        type_char = *(equals1 + 1);
+        type = (equals1 + 1);
+        value = (equals2 + 1);
+        switch (type_char) 
+        {
+            case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
+            case 'y'://*(char *)G_VARIANT_TYPE_BYTE:
+            case 'n'://*(char *)G_VARIANT_TYPE_INT16:
+            case 'q'://*(char *)G_VARIANT_TYPE_UINT16:
+            case 'i'://*(char *)G_VARIANT_TYPE_INT32:
+            case 'u'://*(char *)G_VARIANT_TYPE_UINT32
+            case 'h'://*(char *)G_VARIANT_TYPE_HANDLE
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, atoi(value)));
+                break;
+            case 'x'://*(char *)G_VARIANT_TYPE_INT64:
+            case 't'://*(char *)G_VARIANT_TYPE_UINT64:
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, atol(value)));
+                break;
+            case 's'://*(char *)G_VARIANT_TYPE_STRING:
+            case 'o'://*(char *)G_VARIANT_TYPE_OBJECT_PATH:
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, value));
+                break;
+            default:
+                printf("Type not handled\n");
+                return 1;
+        }
+    }          
+    //g_variant_builder_add(properties, "(sv)", "CPUShares", g_variant_new("s", "100"));
+    GVariant *parms = g_variant_new("(sba(sv))",
+                                    unit,             // unit
+                                    0,                // runtime
+                                    properties);
+    
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          parms,
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+        printf("Set properties ok\n");
+    g_object_unref(proxy);
+    return finalrc;
+}
+
+
+void print_opts()
+{
+    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart]\n");
+    printf("For example:\n");
+    printf("   To set linger: ./gdbus -l 1001\n");
+    printf("To set properties, you should get properties first, remember the name and type and enter them, like this:\n");
+    printf("   ./gdbus -s 1001 CPUShares=t=100 DevicePolicy=s=strict\n");
 }
 
 
@@ -487,6 +653,8 @@ int main(int argc, char *argv[])
     int no_linger = 0;
     int start = 0;
     int get_user = 0;
+    int get_properties = 0;
+    int set_properties = 0;
     
     printf("Test GDBus in my environment to see if it works as advertized\n");
     conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
@@ -499,7 +667,7 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "l:n:g:s?")) != -1)
+    while ((opt = getopt(argc, argv, "l:n:g:p:s:t?")) != -1)
     {
         switch (opt)
         {
@@ -511,19 +679,29 @@ int main(int argc, char *argv[])
             case 'n':
                 no_linger = 1;
                 uid = atoi(optarg);
-                printf("No linger for user: %u", uid);
+                printf("No linger for user: %u\n", uid);
                 break;
             case 'g':
                 get_user = 1;
                 uid = atoi(optarg);
-                printf("Get user for: %u", uid);
+                printf("Get user for: %u\n", uid);
+                break;
+            case 'p':
+                get_properties = 1;
+                uid = atoi(optarg);
+                printf("Get properties for user: %u\n", uid);
                 break;
             case 's':
+                set_properties = 1;
+                uid = atoi(optarg);
+                printf("Set properties for user: %u\n", uid);
+                break;
+            case 't':
                 start = 1;
                 printf("Start transient unit\n");
                 break;
             default:
-                printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-starttransientunit]\n");
+                print_opts();
                 return 1;
         }
     }
@@ -533,6 +711,20 @@ int main(int argc, char *argv[])
         return gbus_linger(linger);
     if (get_user)
         return gbus_getuser();
+    if (get_properties)
+        return gbus_getproperties();
+    if (set_properties)
+    {
+        if (optind >= argc)
+        {
+            printf("To set properties, you must specify some properties\n");
+            print_opts();
+            return 1;
+        }
+        return gbus_setproperties(argc, argv);
+    }
+    g_object_unref(conn);
     printf("You must specify an option\n");
+    print_opts();
     return 1;
 }
