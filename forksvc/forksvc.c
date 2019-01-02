@@ -56,7 +56,6 @@ int main(int argc, char *argv[])
     int fd2;
     FILE *bfd = NULL;
     char tmbuf[80];
-    int next_user = 0;
     int opt;
     int cpu_load = 0;
     int mem_load = 0;
@@ -66,7 +65,7 @@ int main(int argc, char *argv[])
     int use_pam = 0;
     
     printf("Running forksvc\n");
-    while ((opt = getopt(argc, argv, "c:mlup:a?")) != -1)
+    while ((opt = getopt(argc, argv, "c:mlu:p:a?")) != -1)
     {
         switch (opt)
         {
@@ -83,8 +82,8 @@ int main(int argc, char *argv[])
                 printf("No log\n");
                 break;
             case 'u':
-                user_switch = 1;
-                printf("Switch user\n");
+                user_switch = atoi(optarg);
+                printf("Switch user: %u\n", user_switch);
                 break;
             case 'p':
                 port = atoi(optarg);
@@ -95,7 +94,7 @@ int main(int argc, char *argv[])
                 printf("Use PAM\n");
                 break;
             default:
-                printf("forksvc [-cpuload <secs>] [-memoryload] [-lognone] [-userswitch [-auth]] [-port <port>]\n");
+                printf("forksvc [-cpuload <secs>] [-memoryload] [-lognone] [-userswitch <uid> [-auth]] [-port <port>]\n");
                 return 1;
         }
     }
@@ -109,14 +108,27 @@ int main(int argc, char *argv[])
     sa.sin_port = htons(port);
     sa.sin_addr.s_addr = htonl(INADDR_ANY);
     if (!no_log)
-        if (!(bfd = fopen("/home/user/proj/cgroup/forksvc/forksvc.log", "a")))
+    {
+        const char *deflog = "/home/user/proj/cgroup/forksvc/forksvc.log";
+        if (!(bfd = fopen(deflog, "a")))
         {
-            fprintf(stderr, "Error opening log file: %s\n", strerror(errno));
-            return 1;
+            fprintf(stderr, "Error opening default log file: %s, %s\n", 
+                    deflog, strerror(errno));
+            const char *log_only = "forksvc.log";
+            if (!(bfd = fopen(log_only, "a")))
+            {
+                fprintf(stderr, "Error opening log on local dir: %s\n", 
+                        strerror(errno));
+                return 1;
+            }
+            else
+                fprintf(stderr, "Using %s on local dir\n", log_only);
         }
-    setvbuf(bfd, NULL, _IONBF, 0);
+        setvbuf(bfd, NULL, _IONBF, 0);
+    }
     if (user_switch)
     {
+        // Start the way Litespeed starts; as nobody:nobody
         seteuid(65534);
         setegid(65533);
     }
@@ -163,7 +175,6 @@ int main(int argc, char *argv[])
                     ((unsigned char *)&sa2.sin_addr.s_addr)[2],
                     ((unsigned char *)&sa2.sin_addr.s_addr)[3],
                     fd2);
-        next_user = (next_user + 1) % 2;
         pid_t pid;
         pid = fork();
         if (pid == -1)
@@ -194,7 +205,6 @@ int main(int argc, char *argv[])
             close(fd);
             if (user_switch)
             {
-                int user = 1001;//next_user ? 1001 : 1000;
                 if (seteuid(0) == -1)
                     fprintf(bfd, "%s: (%d) child error resetting to euid of 0: %s\n",
                             str_time(tmbuf), getpid(), strerror(errno));
@@ -249,12 +259,14 @@ int main(int argc, char *argv[])
                 if (setegid(100) == -1)
                     fprintf(bfd, "%s: (%d) child error setting egid to %d: %s\n",
                             str_time(tmbuf), getpid(), 100, strerror(errno));
-                if (seteuid(user) == -1)
+                if (seteuid(user_switch) == -1)
                     fprintf(bfd, "%s: (%d) child error setting euid to %d: %s\n", 
-                            str_time(tmbuf), getpid(), user, strerror(errno));
+                            str_time(tmbuf), getpid(), user_switch, 
+                            strerror(errno));
             }
             if (!no_log)
-                fprintf(bfd, "%s: (%d) child beginning recv, running as user/group: %d/%d\n", 
+                fprintf(bfd, "%s: (%d) child beginning recv, running as "
+                        "user/group: %d/%d\n", 
                         str_time(tmbuf), getpid(), geteuid(), getegid());
             int index = 0;
             int increment = 10000000;

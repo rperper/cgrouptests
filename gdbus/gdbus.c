@@ -55,14 +55,95 @@ static int print_args(GDBusArgInfo **args, char *prefix, int in)
     return 0;
 }
 
-    
-int gbus_systemd(void)
+
+int cpu_load(int length)
+{
+    // Now stress the CPU
+    int stress = 1;
+    char stress_arr[2];
+    time_t start, current;
+    time(&start);
+    current = start;
+    while ((stress > 0) && (current - start < length))
+    {
+        stress_arr[0] = stress;
+        stress++;
+        stress--;
+        time(&current);
+    }
+    return 0;
+}
+
+int add_properties(GVariantBuilder *properties, int argc, char *argv[], int *cpu)
+{
+    int opt;
+    for (opt = optind; opt < argc; ++opt)
+    {
+        char param[1024];
+        char *equals1;
+        char *equals2;
+        char *name;
+        char type_char;
+        char *type;
+        char *value;
+        
+        strcpy(param, argv[opt]);
+        if ((!(equals1 = strchr(param, '='))) ||
+            (!(equals2 = strchr(equals1 + 1, '='))))
+        {
+            printf("Bad argument (missing double equals): %s\n", argv[opt]);
+            return -1;
+        }
+        *equals1 = 0;
+        *equals2 = 0;
+        name = param;
+        type_char = *(equals1 + 1);
+        type = (equals1 + 1);
+        value = (equals2 + 1);
+        if ((cpu) && (strstr(name, "CPU")))
+            *cpu = 1;
+        switch (type_char) 
+        {
+            case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
+            case 'y'://*(char *)G_VARIANT_TYPE_BYTE:
+            case 'n'://*(char *)G_VARIANT_TYPE_INT16:
+            case 'q'://*(char *)G_VARIANT_TYPE_UINT16:
+            case 'i'://*(char *)G_VARIANT_TYPE_INT32:
+            case 'u'://*(char *)G_VARIANT_TYPE_UINT32
+            case 'h'://*(char *)G_VARIANT_TYPE_HANDLE
+                printf("Adding int property: %s=%d\n", name, atoi(value));
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, atoi(value)));
+                break;
+            case 'x'://*(char *)G_VARIANT_TYPE_INT64:
+            case 't'://*(char *)G_VARIANT_TYPE_UINT64:
+                printf("Adding long property: %s=%ld\n", name, atol(value));
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, atol(value)));
+                break;
+            case 's'://*(char *)G_VARIANT_TYPE_STRING:
+            case 'o'://*(char *)G_VARIANT_TYPE_OBJECT_PATH:
+                printf("Adding string property: %s=%s\n", name, value);
+                g_variant_builder_add(properties, "(sv)", name, 
+                                      g_variant_new(type, value));
+                break;
+            default:
+                printf("Type not handled\n");
+                return -1;
+        }
+    }          
+    //g_variant_builder_add(properties, "(sv)", "CPUShares", g_variant_new("s", "100"));
+    return 0;
+}
+
+
+int gbus_systemd(int argc, char *argv[])
 {
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
     memset(&bus, 0, sizeof(bus));
     proxy = g_dbus_proxy_new_sync(conn,
-                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  0,//G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
                                   NULL,                                 /* GDBusInterfaceInfo */
                                   "org.freedesktop.systemd1",           /* name */
                                   "/org/freedesktop/systemd1",          /* object path */
@@ -75,7 +156,7 @@ int gbus_systemd(void)
         return 1;
     }
     printf("Created proxy connection\n");
-
+    /*
     bus = g_dbus_proxy_get_interface_info(proxy);
     
     if (!bus)
@@ -151,27 +232,47 @@ int gbus_systemd(void)
         printf("No property names returned\n");
     
     g_strfreev(free_names);
-    
+    */
     printf("Building properties variant\n");
     GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
     //g_variant_builder_add(properties, "(sv)", "CPUShares", g_variant_new("s", "100"));
-    g_variant_builder_add(properties, "(sv)", "Slice", g_variant_new("s", "test.slice"));
+    //g_variant_builder_add(properties, "(sv)", "Slice", g_variant_new("s", "test.slice"));
     g_variant_builder_add(properties, "(sv)", "Description", g_variant_new("s", "Bobs_Unit"));
-    g_variant_builder_add(properties, "(sv)", "ExecStart", g_variant_new("s", "/bin/bash"));
+    //g_variant_builder_add(properties, "(sv)", "ExecStart", g_variant_new("s", "/bin/bash"));
+    char unit[256];
+    sprintf(unit,"run-%u.scope", (unsigned int)getpid());
+    GVariantBuilder *pids_array = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    g_variant_builder_add_value(pids_array, g_variant_new("u", (unsigned int)getpid()));
+    g_variant_builder_add(properties, "(sv)", "PIDs", g_variant_new("au", pids_array));
     char *fn = "StartTransientUnit";
+    int  cpu = 0;
+    if (optind < argc)
+    {
+        if (add_properties(properties, argc, argv, &cpu) == -1)
+            return 1;
+    }
+    /*
     printf("Building aux2 variant\n");
     GVariantBuilder *aux2 = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
-    g_variant_builder_add(aux2, "(sv)", "", g_variant_new("s", ""));
+    g_variant_builder_add(aux2, "(sv)", "unit", g_variant_new("s", unit2));
     printf("Building aux variant\n");
     GVariantBuilder *aux = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
     printf("aux variant add \n");
-    g_variant_builder_add(aux, "(sa(sv))", "", aux2);
+    g_variant_builder_add(aux, "(sa(sv))", unit2, aux2);
+    */
     printf("Building parms variant\n");
+    /*
     GVariant *parms = g_variant_new("(ssa(sv)a(sa(sv)))",
-                                    "testunit.scope", // unit
-                                    "replace",        // mode
+                                    unit,       // unit
+                                    "fail",     // mode
                                     properties,
                                     aux);
+    */
+    GVariant *parms = g_variant_new("(ssa(sv)a(sa(sv)))",
+                                    unit,
+                                    "fail",
+                                    properties,
+                                    NULL);
     printf("Doing proxy call\n");
     GVariant *rc = g_dbus_proxy_call_sync(proxy,
                                           fn,
@@ -179,18 +280,33 @@ int gbus_systemd(void)
                                           G_DBUS_CALL_FLAGS_NONE,
                                           -1,   // Default timeout
                                           NULL, // GCancellable
-                                          &err);
-    printf("Returned from proxy call\n");
-    if (err)
-        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
-    else if (!rc)
-        printf("%s returned NULL!\n", fn);
-    else if (!(strcmp((char *)g_variant_get_type(rc), (char *)G_VARIANT_TYPE_STRING)))
-        printf("%s returned job: %s\n", fn, g_variant_get_data(rc));
-    else if (g_variant_is_container(rc))
-        printf("%s returned a container\n", fn);
-    else 
-        printf("%s returned a type %s\n", fn, g_variant_get_type(rc));
+                                          &err);// userdata
+    if (rc)
+    {
+        if (!(strcmp((char *)g_variant_get_type(rc), (char *)G_VARIANT_TYPE_STRING)))
+            printf("%s returned string: %s\n", fn, g_variant_get_data(rc));
+        else if (g_variant_is_container(rc))
+            printf("%s returned a container\n", fn);
+        else 
+            printf("%s returned a type %s\n", fn, g_variant_get_type(rc));
+    }
+    else if (err)
+    {
+        printf("Error in %s: %s\n", fn, err->message);
+    }
+    else
+        printf("No rc or Error???\n");
+    if (cpu)
+    {
+        printf("Loading CPU for test, pid: %d\n", getpid());
+        cpu_load(60);
+    }
+    else
+    {
+        printf("StartTransientUnit about to return (%s) -> ", unit);
+        char input[80];
+        gets(input);
+    }
     return 0;
 }
 
@@ -560,58 +676,10 @@ int gbus_setproperties(int argc, char *argv[])
     sprintf(unit, "user-%u.slice", uid);
     printf("Building properties variant\n");
     GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
-    int opt;
-    for (opt = optind; opt < argc; ++opt)
-    {
-        char param[1024];
-        char *equals1;
-        char *equals2;
-        char *name;
-        char type_char;
-        char *type;
-        char *value;
-        
-        strcpy(param, argv[opt]);
-        if ((!(equals1 = strchr(param, '='))) ||
-            (!(equals2 = strchr(equals1 + 1, '='))))
-        {
-            printf("Bad argument (missing double equals): %s\n", argv[opt]);
-            return 1;
-        }
-        *equals1 = 0;
-        *equals2 = 0;
-        name = param;
-        type_char = *(equals1 + 1);
-        type = (equals1 + 1);
-        value = (equals2 + 1);
-        switch (type_char) 
-        {
-            case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
-            case 'y'://*(char *)G_VARIANT_TYPE_BYTE:
-            case 'n'://*(char *)G_VARIANT_TYPE_INT16:
-            case 'q'://*(char *)G_VARIANT_TYPE_UINT16:
-            case 'i'://*(char *)G_VARIANT_TYPE_INT32:
-            case 'u'://*(char *)G_VARIANT_TYPE_UINT32
-            case 'h'://*(char *)G_VARIANT_TYPE_HANDLE
-                g_variant_builder_add(properties, "(sv)", name, 
-                                      g_variant_new(type, atoi(value)));
-                break;
-            case 'x'://*(char *)G_VARIANT_TYPE_INT64:
-            case 't'://*(char *)G_VARIANT_TYPE_UINT64:
-                g_variant_builder_add(properties, "(sv)", name, 
-                                      g_variant_new(type, atol(value)));
-                break;
-            case 's'://*(char *)G_VARIANT_TYPE_STRING:
-            case 'o'://*(char *)G_VARIANT_TYPE_OBJECT_PATH:
-                g_variant_builder_add(properties, "(sv)", name, 
-                                      g_variant_new(type, value));
-                break;
-            default:
-                printf("Type not handled\n");
-                return 1;
-        }
-    }          
-    //g_variant_builder_add(properties, "(sv)", "CPUShares", g_variant_new("s", "100"));
+    int cpu = 0;
+    if (add_properties(properties, argc, argv, &cpu) < 0)
+        return 1;
+    
     GVariant *parms = g_variant_new("(sba(sv))",
                                     unit,             // unit
                                     0,                // runtime
@@ -706,7 +774,7 @@ int main(int argc, char *argv[])
         }
     }
     if (start)
-        return gbus_systemd();
+        return gbus_systemd(argc, argv);
     if ((linger) || (no_linger))
         return gbus_linger(linger);
     if (get_user)
@@ -715,12 +783,6 @@ int main(int argc, char *argv[])
         return gbus_getproperties();
     if (set_properties)
     {
-        if (optind >= argc)
-        {
-            printf("To set properties, you must specify some properties\n");
-            print_opts();
-            return 1;
-        }
         return gbus_setproperties(argc, argv);
     }
     g_object_unref(conn);
