@@ -2,14 +2,26 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
 #include <gio/gio.h>
 
+
 // Some variables we're going to need no matter what we do.
+enum tests {
+    none, cpu, memory, block_io, tasks };
+    
 GDBusConnection *conn;
 GError *err = NULL;
 GDBusProxy *proxy;
 GDBusInterfaceInfo *bus;
-int uid;    
+int uid = -1;
+char unit[256] = { 0 };
+char slice[256] = { 0 };
+enum tests test = none;
 
 static int print_annotations(GDBusAnnotationInfo **annotations, char *prefix)
 {
@@ -74,7 +86,94 @@ int cpu_load(int length)
     return 0;
 }
 
-int add_properties(GVariantBuilder *properties, int argc, char *argv[], int *cpu)
+
+int mem_load(void)
+{
+    int index = 0;
+    int increment = 100000;
+    int end       = 1000000000;
+    char *memory_array[(end / increment) + 1];
+    printf("Stack vars: %d, increment: %d, full size: %d\n", sizeof(memory_array),
+           increment, end);
+    {
+        for (index = 0; index < end; index += increment)
+        {
+            memory_array[index / increment] = malloc(index);
+            if (!memory_array[index / increment])
+            {
+                printf("(%d) ran out of memory after allocating %d bytes\n", 
+                       getpid(), index - increment);
+                break;
+            }
+        }
+        if (index >= end) 
+            printf("(%d) was able to allocate the full %d bytes\n",
+                   getpid(), index);
+        
+    }
+}
+
+
+int block_io_load(char *file)
+{
+    int fd = open(file, O_RDONLY);
+    int sz = 1000;
+    char buffer[sz];
+    long count = 0;
+    long start_time;
+    long current_time;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    start_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+    if (fd == -1)
+    {
+        printf("Error opening %s for read-only: %s\n", file, strerror(errno));
+        return -1;
+    }
+    while (read(fd, buffer, sz) == sz)
+    {
+        if (lseek(fd, 0, SEEK_SET) == -1)
+        {
+            printf("lseek to zero failed, %s\n", strerror(errno));
+            break;
+        }
+        count++;
+        if (!(count % 1000000))
+        {
+            clock_gettime(CLOCK_REALTIME, &ts);
+            current_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+            printf("%ld reads, %lu chars/sec\n", count, (1000000000000000000) / (current_time - start_time));
+            start_time = current_time;
+        }
+    }
+    close(fd);
+    return 0;
+}
+
+
+int tasks_load()
+{
+    int forks = 0;
+    int pid;
+    do {
+        pid = fork();
+        if (!pid)
+        {
+            sleep(10);
+            exit(0);
+        }
+        else if (pid > 0)
+        {
+            usleep(1);
+            forks++;
+        }
+    } while (pid > 0);
+    printf("Did %d forks before failing\n", forks);
+}
+
+
+int add_properties(GVariantBuilder *properties, int argc, char *argv[], 
+                   int *cpu, int *memory, int *block_io, int *tasks)
 {
     int opt;
     for (opt = optind; opt < argc; ++opt)
@@ -102,6 +201,12 @@ int add_properties(GVariantBuilder *properties, int argc, char *argv[], int *cpu
         value = (equals2 + 1);
         if ((cpu) && (strstr(name, "CPU")))
             *cpu = 1;
+        if ((memory) && (strstr(name,"Memory")))
+            *memory = 1;
+        if ((block_io) && (strstr(name,"Block")))
+            *block_io = 1;
+        if ((tasks) && (strstr(name, "Tasks")))
+            *tasks = 1;
         switch (type_char) 
         {
             case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
@@ -236,9 +341,7 @@ int gbus_systemd(int argc, char *argv[])
     printf("Building properties variant\n");
     GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
     //g_variant_builder_add(properties, "(sv)", "CPUShares", g_variant_new("s", "100"));
-    //g_variant_builder_add(properties, "(sv)", "Slice", g_variant_new("s", "test.slice"));
     g_variant_builder_add(properties, "(sv)", "Description", g_variant_new("s", "Bobs_Unit"));
-    //g_variant_builder_add(properties, "(sv)", "ExecStart", g_variant_new("s", "/bin/bash"));
     char unit[256];
     sprintf(unit,"run-%u.scope", (unsigned int)getpid());
     GVariantBuilder *pids_array = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
@@ -246,9 +349,12 @@ int gbus_systemd(int argc, char *argv[])
     g_variant_builder_add(properties, "(sv)", "PIDs", g_variant_new("au", pids_array));
     char *fn = "StartTransientUnit";
     int  cpu = 0;
+    int  memory = 0;
+    int  block_io = 0;
+    int  tasks = 0;
     if (optind < argc)
     {
-        if (add_properties(properties, argc, argv, &cpu) == -1)
+        if (add_properties(properties, argc, argv, &cpu, &memory, &block_io, &tasks) == -1)
             return 1;
     }
     /*
@@ -301,6 +407,24 @@ int gbus_systemd(int argc, char *argv[])
         printf("Loading CPU for test, pid: %d\n", getpid());
         cpu_load(60);
     }
+    else if (memory)
+    {
+        printf("Loading Memory for test, pid: %d\n", getpid());
+        mem_load();
+        printf("StartTransientUnit about to return (%s) -> ", unit);
+        char input[80];
+        gets(input);
+    }
+    else if (block_io)
+    {
+        printf("Loading block reads for test, pid: %d\n", getpid());
+        block_io_load(argv[0]);
+    }
+    else if (tasks)
+    {
+        printf("Loading forks, pid: %d\n", getpid());
+        tasks_load();
+    }
     else
     {
         printf("StartTransientUnit about to return (%s) -> ", unit);
@@ -308,6 +432,108 @@ int gbus_systemd(int argc, char *argv[])
         gets(input);
     }
     return 0;
+}
+
+
+int start_transient(int argc, char *argv[])
+{
+    printf("Building properties variant\n");
+    GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    //g_variant_builder_add(properties, "(sv)", "Description", g_variant_new("s", "Bobs_Unit"));
+    GVariantBuilder *pids_array = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    g_variant_builder_add_value(pids_array, g_variant_new("u", (unsigned int)getpid()));
+    g_variant_builder_add(properties, "(sv)", "PIDs", g_variant_new("au", pids_array));
+    if (slice[0])
+        g_variant_builder_add(properties, "(sv)", "Slice", g_variant_new("s", slice));
+    char *fn = "StartTransientUnit";
+    if (optind < argc)
+    {
+        if (add_properties(properties, argc, argv, NULL, NULL, NULL, NULL) == -1)
+            return 1;
+    }
+    printf("Building parms variant\n");
+    //char unit[256];
+    //sprintf(unit,"run-%u.scope", (unsigned int)getpid());
+    GVariant *parms = g_variant_new("(ssa(sv)a(sa(sv)))",
+                                    unit,
+                                    "fail",
+                                    properties,
+                                    NULL);
+    printf("Doing proxy call\n");
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          parms,
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);// userdata
+    if (rc)
+    {
+        if (!(strcmp((char *)g_variant_get_type(rc), (char *)G_VARIANT_TYPE_STRING)))
+            printf("%s returned string: %s\n", fn, g_variant_get_data(rc));
+        else if (g_variant_is_container(rc))
+            printf("%s returned a container\n", fn);
+        else 
+            printf("%s returned a type %s\n", fn, g_variant_get_type(rc));
+    }
+    else if (err)
+    {
+        printf("Error in %s: %s\n", fn, err->message);
+    }
+    else
+        printf("No rc or Error???\n");
+    if (test == cpu)
+    {
+        printf("Loading CPU for test, pid: %d\n", getpid());
+        cpu_load(60);
+    }
+    else if (test == memory)
+    {
+        printf("Loading Memory for test, pid: %d\n", getpid());
+        mem_load();
+        printf("StartTransientUnit about to return (%s) -> ", unit);
+        char input[80];
+        gets(input);
+    }
+    else if (test == block_io)
+    {
+        printf("Loading block reads for test, pid: %d\n", getpid());
+        block_io_load(argv[0]);
+    }
+    else if (test == tasks)
+    {
+        printf("Loading forks, pid: %d\n", getpid());
+        tasks_load();
+    }
+    else
+    {
+        printf("AddToUnit about to return (%s) -> ", unit);
+        char input[80];
+        gets(input);
+    }
+    return 0;
+}
+
+
+
+int gbus_add(int argc, char *argv[])
+{
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  0,//G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                                 /* GDBusInterfaceInfo */
+                                  "org.freedesktop.systemd1",           /* name */
+                                  "/org/freedesktop/systemd1",//output_path,                          /* object path */
+                                  "org.freedesktop.systemd1.Manager",   /* interface */
+                                  NULL,                                 /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    sprintf(unit, "run_%d.scope", getpid());
+    printf("Final unit: %s\n", unit);
+    return start_transient(argc, argv);
 }
 
 
@@ -677,7 +903,10 @@ int gbus_setproperties(int argc, char *argv[])
     printf("Building properties variant\n");
     GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
     int cpu = 0;
-    if (add_properties(properties, argc, argv, &cpu) < 0)
+    int memory = 0;
+    int block_io = 0;
+    int tasks = 0;
+    if (add_properties(properties, argc, argv, &cpu, &memory, &block_io, &tasks) < 0)
         return 1;
     
     GVariant *parms = g_variant_new("(sba(sv))",
@@ -706,7 +935,7 @@ int gbus_setproperties(int argc, char *argv[])
 
 void print_opts()
 {
-    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart]\n");
+    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-forkstest]\n");
     printf("For example:\n");
     printf("   To set linger: ./gdbus -l 1001\n");
     printf("To set properties, you should get properties first, remember the name and type and enter them, like this:\n");
@@ -723,6 +952,8 @@ int main(int argc, char *argv[])
     int get_user = 0;
     int get_properties = 0;
     int set_properties = 0;
+    int add = 0;
+    
     
     printf("Test GDBus in my environment to see if it works as advertized\n");
     conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
@@ -735,10 +966,26 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "l:n:g:p:s:t?")) != -1)
+    while ((opt = getopt(argc, argv, "cmbfl:n:g:p:s:ta:?")) != -1)
     {
         switch (opt)
         {
+            case 'c':
+                test = cpu;
+                printf("Specified CPU test\n");
+                break;
+            case 'm':
+                test = memory;
+                printf("Specified Memory test\n");
+                break;
+            case 'b':
+                test = block_io;
+                printf("Specified Block I/O test\n");
+                break;
+            case 'f':
+                test = tasks;
+                printf("Specified forks (tasks) test\n");
+                break;
             case 'l':
                 linger = 1;
                 uid = atoi(optarg);
@@ -764,6 +1011,11 @@ int main(int argc, char *argv[])
                 uid = atoi(optarg);
                 printf("Set properties for user: %u\n", uid);
                 break;
+            case 'a':
+                add = 1;
+                strcpy(slice, optarg);
+                printf("CreateScope in slice: %s\n", unit);
+                break;
             case 't':
                 start = 1;
                 printf("Start transient unit\n");
@@ -773,6 +1025,8 @@ int main(int argc, char *argv[])
                 return 1;
         }
     }
+    if (add)
+        return gbus_add(argc, argv);
     if (start)
         return gbus_systemd(argc, argv);
     if ((linger) || (no_linger))
@@ -782,9 +1036,7 @@ int main(int argc, char *argv[])
     if (get_properties)
         return gbus_getproperties();
     if (set_properties)
-    {
         return gbus_setproperties(argc, argv);
-    }
     g_object_unref(conn);
     printf("You must specify an option\n");
     print_opts();
