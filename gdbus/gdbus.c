@@ -12,7 +12,7 @@
 
 // Some variables we're going to need no matter what we do.
 enum tests {
-    none, cpu, memory, block_io, tasks };
+    none, cpu, memory, block_io, block_write, block_read, tasks };
     
 GDBusConnection *conn;
 GError *err = NULL;
@@ -114,7 +114,76 @@ int mem_load(void)
 }
 
 
-int block_io_load(char *file)
+int block_io_load(void)
+{
+    char *file_input = "read.data";
+    int fd_input = open(file_input, O_RDONLY);
+    int sz = 10000;
+    char buffer[sz];
+    long count = 0;
+    long start_time;
+    long current_time;
+    struct timespec ts;
+    int error = 0;
+    
+    clock_gettime(CLOCK_REALTIME, &ts);
+    start_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+    if (fd_input == -1)
+    {
+        printf("Error opening %s for read-only: %s\n", file_input, strerror(errno));
+        return -1;
+    }
+    char *file_output = "write.data";
+    int fd_output = open(file_output, O_WRONLY | O_CREAT, 0666);
+
+    while (!error)
+    {
+        int len;
+        count = 0;
+        if (lseek(fd_input, 0, SEEK_SET) == -1)
+        {
+            printf("Error doing lseek to zero of input: %s\n", strerror(errno));
+            error = 1;
+            break;
+        }
+        if (lseek(fd_output, 0, SEEK_SET) == -1)
+        {
+            printf("Error doing lseek to zero of output: %s\n", strerror(errno));
+            error = 1;
+            break;
+        }
+        while ((len = read(fd_input, buffer, sz)) > 0)
+        {
+            if (write(fd_output, buffer, len) < 0)
+            {
+                printf("Error in write: %s\n", strerror(errno));
+                error = 1;
+                break;
+            }
+            count += len;
+        }
+        if (error)
+            break;
+        if (len == -1)
+        {
+            printf("Error reading input file: %s\n", strerror(errno));
+            error = 1;
+            break;
+        }
+        clock_gettime(CLOCK_REALTIME, &ts);
+        current_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+        printf("Read/write full file, %lu chars, %lu chars/sec, %lu secs\n", count, 
+               (count * 100000000) / (current_time - start_time), 
+               (current_time - start_time) / 1000000000);
+        start_time = current_time;
+    }
+    close(fd_input);
+    close(fd_output);
+    return error;
+}
+
+
+int block_read_load(char *file)
 {
     int fd = open(file, O_RDONLY);
     int sz = 1000;
@@ -131,6 +200,46 @@ int block_io_load(char *file)
         return -1;
     }
     while (read(fd, buffer, sz) == sz)
+    {
+        if (lseek(fd, 0, SEEK_SET) == -1)
+        {
+            printf("lseek to zero failed, %s\n", strerror(errno));
+            break;
+        }
+        count++;
+        if (!(count % 1000000))
+        {
+            clock_gettime(CLOCK_REALTIME, &ts);
+            current_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+            printf("%ld reads, %lu chars/sec\n", count, (1000000000000000000) / (current_time - start_time));
+            start_time = current_time;
+        }
+    }
+    close(fd);
+    return 0;
+}
+
+
+int block_write_load()
+{
+    char file[235];
+    sprintf(file, "pid-%u.write", getpid());
+    int fd = open(file, O_WRONLY | O_CREAT, 0666);
+    int sz = 1000;
+    char buffer[sz];
+    long count = 0;
+    long start_time;
+    long current_time;
+    struct timespec ts;
+    memset(buffer,0xff, sz);
+    clock_gettime(CLOCK_REALTIME, &ts);
+    start_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
+    if (fd == -1)
+    {
+        printf("Error opening %s for write-only: %s\n", file, strerror(errno));
+        return -1;
+    }
+    while (write(fd, buffer, sz) == sz)
     {
         if (lseek(fd, 0, SEEK_SET) == -1)
         {
@@ -417,8 +526,8 @@ int gbus_systemd(int argc, char *argv[])
     }
     else if (block_io)
     {
-        printf("Loading block reads for test, pid: %d\n", getpid());
-        block_io_load(argv[0]);
+        printf("Loading block I/O for test, pid: %d\n", getpid());
+        block_io_load();
     }
     else if (tasks)
     {
@@ -435,22 +544,99 @@ int gbus_systemd(int argc, char *argv[])
 }
 
 
+int gbus_setproperties(int argc, char *argv[], int uid)
+{
+    int finalrc = 1;
+    if (uid == -1)
+    {
+        printf("Invalid uid\n");
+        return -1;
+    }
+    printf("Did g_bus initial call (conn: %s), try to set the unit properties\n", 
+           conn ? "NOT NULL" : "NULL");
+    GDBusProxy *proxy = g_dbus_proxy_new_sync(conn,
+                                              G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                              NULL,                                 /* GDBusInterfaceInfo */
+                                              "org.freedesktop.systemd1",           /* name */
+                                              "/org/freedesktop/systemd1",          /* object path */
+                                              "org.freedesktop.systemd1.Manager",   /* interface */
+                                              NULL,                                 /* GCancellable */
+                                              &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+    char *fn = "SetUnitProperties";
+    printf("Call GetUnit to get the path\n");
+    char unit[256];
+    sprintf(unit, "user-%u.slice", uid);
+    printf("Building properties variant\n");
+    GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    if (add_properties(properties, argc, argv, NULL, NULL, NULL, NULL) < 0)
+        return 1;
+    
+    GVariant *parms = g_variant_new("(sba(sv))",
+                                    unit,             // unit
+                                    0,                // runtime
+                                    properties);
+    
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          parms,
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+        printf("Set properties ok\n");
+    g_object_unref(proxy);
+    return finalrc;
+}
+
+
+int parse_uid_from_slice(char *slice)
+{
+    char remain[256];
+    char *suffix;
+    if (memcmp("user-", slice, 5))
+        return -1;
+    strcpy(remain, &slice[5]);
+    if (suffix = strstr(remain, ".slice"))
+    {
+        *suffix = 0;
+        int uid = atoi(remain);
+        printf("Extracted uid: %d\n", uid);
+        return uid;
+    }
+    return -1;
+}
+
+
 int start_transient(int argc, char *argv[])
 {
     printf("Building properties variant\n");
     GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
     //g_variant_builder_add(properties, "(sv)", "Description", g_variant_new("s", "Bobs_Unit"));
     GVariantBuilder *pids_array = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
+    if (optind < argc)
+    {
+        if (gbus_setproperties(argc, argv, parse_uid_from_slice(slice)) == -1)
+            return 1;
+    }
+    
     g_variant_builder_add_value(pids_array, g_variant_new("u", (unsigned int)getpid()));
     g_variant_builder_add(properties, "(sv)", "PIDs", g_variant_new("au", pids_array));
     if (slice[0])
         g_variant_builder_add(properties, "(sv)", "Slice", g_variant_new("s", slice));
     char *fn = "StartTransientUnit";
-    if (optind < argc)
-    {
-        if (add_properties(properties, argc, argv, NULL, NULL, NULL, NULL) == -1)
-            return 1;
-    }
     printf("Building parms variant\n");
     //char unit[256];
     //sprintf(unit,"run-%u.scope", (unsigned int)getpid());
@@ -497,8 +683,18 @@ int start_transient(int argc, char *argv[])
     }
     else if (test == block_io)
     {
+        printf("Loading block I/O for test, pid: %d\n", getpid());
+        block_io_load();
+    }
+    else if (test == block_read)
+    {
         printf("Loading block reads for test, pid: %d\n", getpid());
-        block_io_load(argv[0]);
+        block_read_load(argv[0]);
+    }
+    else if (test == block_write)
+    {
+        printf("Loading block writes for test, pid: %d\n", getpid());
+        block_write_load();
     }
     else if (test == tasks)
     {
@@ -848,8 +1044,10 @@ int gbus_getproperties()
 
     char *fn = "GetUnit";
     printf("Call GetUnit to get the path\n");
-    char unit[256];
-    sprintf(unit, "user-%u.slice", uid);
+    if (uid != -1)
+    {
+        sprintf(unit, "user-%u.slice", uid);
+    }
     GVariant *rc = g_dbus_proxy_call_sync(proxy,
                                           fn,
                                           g_variant_new("(s)",
@@ -876,66 +1074,9 @@ int gbus_getproperties()
 }
 
 
-int gbus_setproperties(int argc, char *argv[])
-{
-    int finalrc = 1;
-    printf("Did g_bus initial call (conn: %s), try to get the unit properties\n", 
-           conn ? "NOT NULL" : "NULL");
-    proxy = g_dbus_proxy_new_sync(conn,
-                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
-                                  NULL,                                 /* GDBusInterfaceInfo */
-                                  "org.freedesktop.systemd1",           /* name */
-                                  "/org/freedesktop/systemd1",          /* object path */
-                                  "org.freedesktop.systemd1.Manager",   /* interface */
-                                  NULL,                                 /* GCancellable */
-                                  &err);
-    if (err)
-    {
-        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
-        return 1;
-    }
-    printf("Created proxy connection\n");
-
-    char *fn = "SetUnitProperties";
-    printf("Call GetUnit to get the path\n");
-    char unit[256];
-    sprintf(unit, "user-%u.slice", uid);
-    printf("Building properties variant\n");
-    GVariantBuilder *properties = g_variant_builder_new(G_VARIANT_TYPE_ARRAY);
-    int cpu = 0;
-    int memory = 0;
-    int block_io = 0;
-    int tasks = 0;
-    if (add_properties(properties, argc, argv, &cpu, &memory, &block_io, &tasks) < 0)
-        return 1;
-    
-    GVariant *parms = g_variant_new("(sba(sv))",
-                                    unit,             // unit
-                                    0,                // runtime
-                                    properties);
-    
-    GVariant *rc = g_dbus_proxy_call_sync(proxy,
-                                          fn,
-                                          parms,
-                                          G_DBUS_CALL_FLAGS_NONE,
-                                          -1,   // Default timeout
-                                          NULL, // GCancellable
-                                          &err);
-    printf("Returned from proxy call\n");
-    if (err)
-        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
-    else if (!rc)
-        printf("%s returned NULL!\n", fn);
-    else 
-        printf("Set properties ok\n");
-    g_object_unref(proxy);
-    return finalrc;
-}
-
-
 void print_opts()
 {
-    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-forkstest]\n");
+    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-writestest] [-forkstest]\n");
     printf("For example:\n");
     printf("   To set linger: ./gdbus -l 1001\n");
     printf("To set properties, you should get properties first, remember the name and type and enter them, like this:\n");
@@ -966,7 +1107,7 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "cmbfl:n:g:p:s:ta:?")) != -1)
+    while ((opt = getopt(argc, argv, "cmrbwfl:n:g:p:s:ta:?")) != -1)
     {
         switch (opt)
         {
@@ -981,6 +1122,14 @@ int main(int argc, char *argv[])
             case 'b':
                 test = block_io;
                 printf("Specified Block I/O test\n");
+                break;
+            case 'r':
+                test = block_read;
+                printf("Specified Block read test\n");
+                break;
+            case 'w':
+                test = block_write;
+                printf("Specified Block write test\n");
                 break;
             case 'f':
                 test = tasks;
@@ -1003,8 +1152,16 @@ int main(int argc, char *argv[])
                 break;
             case 'p':
                 get_properties = 1;
-                uid = atoi(optarg);
-                printf("Get properties for user: %u\n", uid);
+                if ((optarg[0] >= '0') && (optarg[0] <= '9'))
+                {
+                    uid = atoi(optarg);
+                    printf("Get properties for user: %u\n", uid);
+                }
+                else 
+                {
+                    strcpy(unit, optarg);
+                    printf("Get properties for unit: %s\n", unit);
+                }
                 break;
             case 's':
                 set_properties = 1;
@@ -1036,9 +1193,26 @@ int main(int argc, char *argv[])
     if (get_properties)
         return gbus_getproperties();
     if (set_properties)
-        return gbus_setproperties(argc, argv);
+        return gbus_setproperties(argc, argv, uid);
     g_object_unref(conn);
-    printf("You must specify an option\n");
-    print_opts();
-    return 1;
+    switch (test)
+    {
+        case none:
+        default:
+            printf("You must specify an option\n");
+            print_opts();
+            return 1;
+        case cpu:
+            return cpu_load(60);
+        case memory:
+            return mem_load();
+        case block_io:
+            return block_io_load();
+        case block_read:
+            return block_read_load(argv[0]);
+        case block_write:
+            return block_write_load();
+        case tasks:
+            return tasks_load();
+    }
 }
