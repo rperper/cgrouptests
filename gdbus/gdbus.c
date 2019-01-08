@@ -95,14 +95,24 @@ int mem_load(void)
     char *memory_array[(end / increment) + 1];
     printf("Stack vars: %d, increment: %d, full size: %d\n", sizeof(memory_array),
            increment, end);
+    int uid = getuid();
+    if (uid != 0)
+        printf("UID is not zero (%d), can't lock memory\n");
     {
         for (index = 0; index < end; index += increment)
         {
             memory_array[index / increment] = malloc(index);
             if (!memory_array[index / increment])
             {
-                printf("(%d) ran out of memory after allocating %d bytes\n", 
-                       getpid(), index - increment);
+                printf("(%d) ran out of memory after allocating %d bytes: %s\n", 
+                       getpid(), index - increment, strerror(errno));
+                break;
+            }
+            if ((uid == 0) &&
+                (mlock(memory_array[index / increment], increment) != 0))
+            {
+                printf("(%d) ran out of REAL memory after allocating %d bytes: %s\n",
+                       getpid(), index, strerror(errno));
                 break;
             }
         }
@@ -631,6 +641,11 @@ int start_transient(int argc, char *argv[])
         if (gbus_setproperties(argc, argv, parse_uid_from_slice(slice)) == -1)
             return 1;
     }
+    //if (optind < argc)
+    //{
+    //    if (add_properties(properties, argc, argv, NULL, NULL, NULL, NULL) == -1)
+    //        return 1;
+    //}
     
     g_variant_builder_add_value(pids_array, g_variant_new("u", (unsigned int)getpid()));
     g_variant_builder_add(properties, "(sv)", "PIDs", g_variant_new("au", pids_array));
