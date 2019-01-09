@@ -22,6 +22,8 @@ int uid = -1;
 char unit[256] = { 0 };
 char slice[256] = { 0 };
 enum tests test = none;
+char file[256] = { 0 };
+
 
 static int print_annotations(GDBusAnnotationInfo **annotations, char *prefix)
 {
@@ -193,7 +195,7 @@ int block_io_load(void)
 }
 
 
-int block_read_load(char *file)
+int block_read_load()
 {
     int fd = open(file, O_RDONLY);
     int sz = 1000;
@@ -211,11 +213,6 @@ int block_read_load(char *file)
     }
     while (read(fd, buffer, sz) == sz)
     {
-        if (lseek(fd, 0, SEEK_SET) == -1)
-        {
-            printf("lseek to zero failed, %s\n", strerror(errno));
-            break;
-        }
         count++;
         if (!(count % 1000000))
         {
@@ -232,8 +229,6 @@ int block_read_load(char *file)
 
 int block_write_load()
 {
-    char file[235];
-    sprintf(file, "pid-%u.write", getpid());
     int fd = open(file, O_WRONLY | O_CREAT, 0666);
     int sz = 1000;
     char buffer[sz];
@@ -704,7 +699,7 @@ int start_transient(int argc, char *argv[])
     else if (test == block_read)
     {
         printf("Loading block reads for test, pid: %d\n", getpid());
-        block_read_load(argv[0]);
+        block_read_load();
     }
     else if (test == block_write)
     {
@@ -1091,7 +1086,7 @@ int gbus_getproperties()
 
 void print_opts()
 {
-    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-writestest] [-forkstest]\n");
+    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest]\n");
     printf("For example:\n");
     printf("   To set linger: ./gdbus -l 1001\n");
     printf("To set properties, you should get properties first, remember the name and type and enter them, like this:\n");
@@ -1122,7 +1117,7 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "cmrbwfl:n:g:p:s:ta:?")) != -1)
+    while ((opt = getopt(argc, argv, "cmr:bw:fl:n:g:p:s:ta:?")) != -1)
     {
         switch (opt)
         {
@@ -1140,10 +1135,12 @@ int main(int argc, char *argv[])
                 break;
             case 'r':
                 test = block_read;
+                strcpy(file, optarg);
                 printf("Specified Block read test\n");
                 break;
             case 'w':
                 test = block_write;
+                strcpy(file, optarg);
                 printf("Specified Block write test\n");
                 break;
             case 'f':
@@ -1224,7 +1221,7 @@ int main(int argc, char *argv[])
         case block_io:
             return block_io_load();
         case block_read:
-            return block_read_load(argv[0]);
+            return block_read_load();
         case block_write:
             return block_write_load();
         case tasks:
