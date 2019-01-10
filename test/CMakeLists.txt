@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 2.9)
+project(cgroup_test)
+link_directories("../src/build")
+set(SOURCE_FILES test_pgm.cpp)
+add_executable(test_pgm ${SOURCE_FILES})
+include_directories("../src")
+include_directories("../../lsr/include")
+set (EXTRA_LIBS ${EXTRA_LIBS} libcgroup.a)
+target_link_libraries( test_pgm ${EXTRA_LIBS} gobject-2.0 gio-2.0 glib-2.0 )
+
