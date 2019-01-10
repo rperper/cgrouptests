@@ -18,19 +18,15 @@ void CGroupConn::clear_err()
     
 int CGroupConn::create()
 {
-    int euid = geteuid();
-    seteuid(getuid());
     clear_err();
     conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
                           NULL, // GCancellable
                           &err);
-    seteuid(euid);
     if (err)
     {
         set_error(CERR_GDERR);
         return -1;
     }
-    seteuid(getuid());
     clear_err();
     proxy = g_dbus_proxy_new_sync(conn,
                                   G_DBUS_PROXY_FLAGS_NONE,
@@ -40,7 +36,6 @@ int CGroupConn::create()
                                   "org.freedesktop.systemd1.Manager",   /* interface */
                                   NULL,                                 /* GCancellable */
                                   &err);
-    seteuid(euid);
     if (err)
     {
         set_error(CERR_GDERR);

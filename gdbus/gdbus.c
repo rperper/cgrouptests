@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
+#include <sys/mman.h>
 #include <gio/gio.h>
 
 
@@ -748,22 +749,23 @@ int gbus_linger(int enable_linger)
     printf("Did g_bus initial call (conn: %s), try to get the logind proxy\n", 
            conn ? "NOT NULL" : "NULL");
     memset(&bus, 0, sizeof(bus));
-    proxy = g_dbus_proxy_new_sync(conn,
-                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
-                                  NULL,                               /* GDBusInterfaceInfo */
-                                  "org.freedesktop.login1",           /* name */
-                                  "/org/freedesktop/login1",          /* object path */
-                                  "org.freedesktop.login1.Manager",   /* interface */
-                                  NULL,                               /* GCancellable */
-                                  &err);
+    GDBusProxy *proxy_login = g_dbus_proxy_new_sync(conn,
+                                                    G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                                    NULL,                               /* GDBusInterfaceInfo */
+                                                    "org.freedesktop.login1",           /* name */
+                                                    "/org/freedesktop/login1",          /* object path */
+                                                    "org.freedesktop.login1.Manager",   /* interface */
+                                                    NULL,                               /* GCancellable */
+                                                    &err);
     if (err)
     {
         printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
         return 1;
     }
+    /*
     printf("Created proxy connection\n");
 
-    bus = g_dbus_proxy_get_interface_info(proxy);
+    bus = g_dbus_proxy_get_interface_info(proxy_login);
     
     if (!bus)
         printf("No interface info???\n");
@@ -822,12 +824,12 @@ int gbus_linger(int enable_linger)
         print_annotations(annotations, prefix);
     }
     
-    gchar **names = g_dbus_proxy_get_cached_property_names(proxy);
+    gchar **names = g_dbus_proxy_get_cached_property_names(proxy_login);
     gchar **free_names = names;
     int index = 0;
     while ((names) && (*names))
     {
-        GVariant *value = g_dbus_proxy_get_cached_property(proxy, *names);
+        GVariant *value = g_dbus_proxy_get_cached_property(proxy_login, *names);
         printf("property_name[%d]: %s = %s\n", index, *names,
                strcmp(g_variant_get_type_string(value), (char *)G_VARIANT_TYPE_STRING) ?
                g_variant_get_type(value) : g_variant_get_data(value));
@@ -838,10 +840,11 @@ int gbus_linger(int enable_linger)
         printf("No property names returned\n");
     
     g_strfreev(free_names);
+    */
     printf("Call SetUserLinger\n");
-    printf("Doing proxy call\n");
+    printf("Doing proxy call, uid: %u, euid: %u\n", getuid(), geteuid());
     char *fn = "SetUserLinger";
-    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+    GVariant *rc = g_dbus_proxy_call_sync(proxy_login,
                                           fn,
                                           g_variant_new("(ubb)",
                                                         uid,

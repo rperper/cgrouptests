@@ -17,7 +17,6 @@ class CGroupUse
 private:
     friend class CGroupConn;
     CGroupConn *conn;
-    int set_linger();
 public:
     CGroupUse(CGroupConn *conn)
     { CGroupUse::conn = conn; }
@@ -25,7 +24,7 @@ public:
     ~CGroupUse()
     {   }
     
-    int apply();
+    int apply(int uid);
  
     LS_NO_COPY_ASSIGN(CGroupUse);
 };
