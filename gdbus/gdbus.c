@@ -517,35 +517,6 @@ int gbus_systemd(int argc, char *argv[])
     }
     else
         printf("No rc or Error???\n");
-    if (cpu)
-    {
-        printf("Loading CPU for test, pid: %d\n", getpid());
-        cpu_load(60);
-    }
-    else if (memory)
-    {
-        printf("Loading Memory for test, pid: %d\n", getpid());
-        mem_load();
-        printf("StartTransientUnit about to return (%s) -> ", unit);
-        char input[80];
-        gets(input);
-    }
-    else if (block_io)
-    {
-        printf("Loading block I/O for test, pid: %d\n", getpid());
-        block_io_load();
-    }
-    else if (tasks)
-    {
-        printf("Loading forks, pid: %d\n", getpid());
-        tasks_load();
-    }
-    else
-    {
-        printf("StartTransientUnit about to return (%s) -> ", unit);
-        char input[80];
-        gets(input);
-    }
     return 0;
 }
 
@@ -678,46 +649,9 @@ int start_transient(int argc, char *argv[])
         printf("Error in %s: %s\n", fn, err->message);
     }
     else
+    
         printf("No rc or Error???\n");
-    if (test == cpu)
-    {
-        printf("Loading CPU for test, pid: %d\n", getpid());
-        cpu_load(60);
-    }
-    else if (test == memory)
-    {
-        printf("Loading Memory for test, pid: %d\n", getpid());
-        mem_load();
-        printf("StartTransientUnit about to return (%s) -> ", unit);
-        char input[80];
-        gets(input);
-    }
-    else if (test == block_io)
-    {
-        printf("Loading block I/O for test, pid: %d\n", getpid());
-        block_io_load();
-    }
-    else if (test == block_read)
-    {
-        printf("Loading block reads for test, pid: %d\n", getpid());
-        block_read_load();
-    }
-    else if (test == block_write)
-    {
-        printf("Loading block writes for test, pid: %d\n", getpid());
-        block_write_load();
-    }
-    else if (test == tasks)
-    {
-        printf("Loading forks, pid: %d\n", getpid());
-        tasks_load();
-    }
-    else
-    {
-        printf("AddToUnit about to return (%s) -> ", unit);
-        char input[80];
-        gets(input);
-    }
+    
     return 0;
 }
 
@@ -927,6 +861,26 @@ int bus_print_all_properties(const char *dest, const char *path)
         type_char = *(char *)type;
         switch (type_char) 
         {
+            case 'a':// G_VARIANT_TYPE_ARRAY
+                if (*(((char *)type) + 1) == 's')
+                {
+                    gsize len = g_variant_n_children(value);
+                    GVariant *mem;
+                    char *arr_type = (((char *)type) + 1);
+                    int i;
+                    printf("          %d elements:\n", len);
+                    for (i = 0; i < len; ++i)
+                    {
+                        unsigned char *my_char;  
+                            
+                        GVariant *child = g_variant_get_child_value(value, i);
+                        g_variant_get(child, (char *)arr_type, &my_char);
+                        printf("            [%u]: %s\n", i, my_char);
+                    }
+                }
+                else
+                    printf("          Type not handled\n");
+                break;
             case 'b'://*(char *)G_VARIANT_TYPE_BOOLEAN:
                 {
                     int my_int;
@@ -1087,9 +1041,275 @@ int gbus_getproperties()
 }
 
 
+int get_session_path()
+{
+    GDBusProxy          *proxy;
+    GDBusConnection     *conn2;
+    
+    conn2 = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
+                           NULL, // GCancellable
+                           &err);
+
+    int finalrc = 1;
+    printf("Extract the session path for the PID\n"); 
+    // This proxy is only used to get the path.
+    proxy = g_dbus_proxy_new_sync(conn2,
+                                  G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START,
+                                  NULL,                               /* GDBusInterfaceInfo */
+                                  "org.freedesktop.login1",           /* name */
+                                  "/org/freedesktop/login1",          /* object path */
+                                  "org.freedesktop.login1.Manager",   /* interface */
+                                  NULL,                               /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+    char *fn = "GetSessionByPID";
+    printf("Call %s to get the path\n", fn);
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          g_variant_new("(u)",
+                                                        getpid()),
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+    {
+        char *output_path;
+        g_variant_get(rc, "(o)", &output_path);
+        printf("Output path: %s\n", output_path);
+        finalrc = 0;
+    }
+    g_object_unref(conn2);
+    g_object_unref(proxy);
+    return finalrc;
+    
+}
+
+
+int do_list_sessions()
+{
+    GDBusProxy          *proxy;
+    GDBusConnection     *conn2;
+    
+    conn2 = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
+                           NULL, // GCancellable
+                           &err);
+
+    int finalrc = 1;
+    printf("List sessions:\n"); 
+    // This proxy is only used to get the path.
+    proxy = g_dbus_proxy_new_sync(conn2,
+                                  0,
+                                  NULL,                               /* GDBusInterfaceInfo */
+                                  "org.freedesktop.login1",           /* name */
+                                  "/org/freedesktop/login1",          /* object path */
+                                  "org.freedesktop.login1.Manager",   /* interface */
+                                  NULL,                               /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync: %s\n", err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+
+    char *fn = "ListSessions";
+    printf("Call %s to get the list\n", fn);
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          NULL,
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+        printf("Error returned by g_bus_proxy_call_sync: %s\n", err->message);
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+    {
+        printf("List sessions: type: %s, container: %s, children: %u, class: %d\n", 
+               g_variant_get_type_string(rc), 
+               g_variant_is_container(rc) ? "YES" : "NO",
+               g_variant_n_children(rc),
+               g_variant_classify(rc));
+        GVariant *array = g_variant_get_child_value(rc, 0);
+        printf("Extracted array\n");
+        int i = 0;
+        gsize len = g_variant_n_children(array);
+        printf("Extracted len: %d\n", len);
+        GVariant *child;
+        for (i = 0; i < len; ++i)
+        {
+            char *session_id = NULL;;  
+            int   user_id = 0;
+            char *user_name = NULL;
+            char *seat_id = NULL;
+            char *user_object_path = NULL;
+            
+            child = g_variant_get_child_value(array, i);
+            printf("parent type: %s, child type: %s\n", g_variant_get_type_string(array),
+                   g_variant_get_type_string(child));
+            g_variant_get(child, (char *)"(susso)", &session_id, &user_id, 
+                          &user_name, &seat_id, &user_object_path);
+            printf("  [%u]: id: %s, user: %u, name: %s, seat: %s, path: %s\n", 
+                   i, session_id, user_id, user_name, seat_id, user_object_path);
+            i++;
+        }
+        finalrc = 0;
+    }
+    g_object_unref(conn2);
+    g_object_unref(proxy);
+    return finalrc;
+    
+}
+
+
+int do_create_session()
+{
+    GDBusProxy          *proxy;
+    char *fn;
+    
+    int finalrc = 1;
+    // This proxy is only used to get the path.
+    proxy = g_dbus_proxy_new_sync(conn,
+                                  0,
+                                  NULL,                               /* GDBusInterfaceInfo */
+                                  "org.freedesktop.login1",           /* name */
+                                  "/org/freedesktop/login1",          /* object path */
+                                  "org.freedesktop.login1.Manager",   /* interface */
+                                  NULL,                               /* GCancellable */
+                                  &err);
+    if (err)
+    {
+        printf("Error returned by g_bus_proxy_new_sync for login1: %s\n", 
+               err->message);
+        return 1;
+    }
+    printf("Created proxy connection\n");
+    
+    seteuid(uid);
+    
+    fn = "GetSessionByPID";
+    printf("Call %s to get the path\n", fn);
+    GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                          fn,
+                                          g_variant_new("(u)",
+                                                        getpid()),
+                                          G_DBUS_CALL_FLAGS_NONE,
+                                          -1,   // Default timeout
+                                          NULL, // GCancellable
+                                          &err);
+    printf("Returned from proxy call\n");
+    if (err)
+    {
+        printf("Error returned by %s: %s\n", fn, err->message);
+        finalrc = 0;  // This is actually good!
+        err = NULL;
+    }
+    else if (!rc)
+        printf("%s returned NULL!\n", fn);
+    else 
+    {
+        char *output_path;
+        g_variant_get(rc, "(o)", &output_path);
+        printf("Output path for session: %s\n", output_path);
+        finalrc = 0;
+    }
+
+    if (!finalrc)
+    {
+        finalrc = 1;
+        fn = "CreateSession";
+                                      
+        GVariant *parms = g_variant_new("(uusssssussbssa(sv))",
+                                        uid,                //uid
+                                        getpid(),           //pid
+                                        "",                 //service
+                                        "unspecified",      //"unspecified"type = getenv("XDG_SESSION_TYPE");
+                                        "background",             //class (could be "user")
+                                        "",                 //desktop = getenv("XDG_SESSION_DESKTOP");
+                                        "",                 //seat = getenv("XDG_SEAT");
+                                        0,                  //atoi(cvtnr = getenv("XDG_VTNR"));
+                                        "",                 //tty
+                                        "",                 //display = tty
+                                        0,                  //remote
+                                        "",                 //remote_user
+                                        "",                 //remote_host
+                                        NULL);              //properties
+    
+        GVariant *rc = g_dbus_proxy_call_sync(proxy,
+                                              fn,
+                                              parms,
+                                              G_DBUS_CALL_FLAGS_NONE,
+                                              -1,   // Default timeout
+                                              NULL, // GCancellable
+                                              &err);
+        printf("Returned from proxy call\n");
+        if (err)
+            printf("Error returned by %s: %s\n", fn, err->message);
+        else if (!rc)
+            printf("%s returned NULL!\n", fn);
+        else 
+        {
+            char *session_id;
+            char *object_path;
+            char *runtime_path;
+            short session_fd;
+            int   original_uid;
+            char *seat;
+            int   vtnr;
+            int   existing;
+        
+            printf("%s returned no error", fn);
+            g_variant_get(rc,"(soshusub)",
+                          &session_id,
+                          &object_path,
+                          &runtime_path,
+                          &session_fd,
+                          &original_uid,
+                          &seat,
+                          &vtnr,
+                          &existing);
+            
+            printf("%s output:\n", fn);
+            printf("   session_id   : %s\n", session_id);
+            printf("   object_path  : %s\n", object_path);
+            printf("   runtime_path : %s\n", runtime_path);
+            printf("   session_fd   : %u\n", session_fd);
+            printf("   original_uid : %u\n", original_uid);
+            printf("   seat         : %s\n", seat);
+            printf("   vtnr         : %u\n", vtnr);
+            printf("   existing     : %s\n", existing ? "YES" : "NO");
+            finalrc = 0;
+        }
+    }
+    g_object_unref(proxy);
+    return finalrc;
+    
+}
+
+
 void print_opts()
 {
-    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] [-properties <uid>] [-setproperties <uid> [name=(type)=value]..] [-transientunitstart] [-a [slice_name]] [-cputest] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest]\n");
+    printf("gdbus [-linger <uid>] [-nolinger <uid>] [-getuser <uid> ] "
+           "[-properties <uid or unit>] [-setproperties <uid>] "
+           "[name=(type)=value]..] [-transientunitstart] [-a [slice_name]] "
+           "[-cputest] [-memorytest] [-blockiotest] [-readstest <file>] "
+           "[-writestest <file>] [-forkstest] [-enter] [-2proc(fork)] [-idsession] "
+           "[-1.ListSessions] [3.CreateSession <uid>]\n");
     printf("For example:\n");
     printf("   To set linger: ./gdbus -l 1001\n");
     printf("To set properties, you should get properties first, remember the name and type and enter them, like this:\n");
@@ -1107,12 +1327,15 @@ int main(int argc, char *argv[])
     int get_properties = 0;
     int set_properties = 0;
     int add = 0;
-    
+    int enter = 0;    
+    int rc = 0;
+    int do_fork = 0;
+    int session_path = 0;
+    int list_sessions = 0;
+    int create_session = 0;
+    int fork_first = 0;
     
     printf("Test GDBus in my environment to see if it works as advertized\n");
-    conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
-                          NULL, // GCancellable
-                          &err);
     if (err)
     {
         fprintf(stderr, "Error returned by g_bus_get_sync: %s\n", err->message);
@@ -1120,7 +1343,7 @@ int main(int argc, char *argv[])
     }
     printf("Did g_bus initial call (conn: %s), try to get the proxy\n", 
            conn ? "NOT NULL" : "NULL");
-    while ((opt = getopt(argc, argv, "cmr:bw:fl:n:g:p:s:ta:?")) != -1)
+    while ((opt = getopt(argc, argv, "3:1e2icmr:bw:fl:n:g:p:s:ta:?")) != -1)
     {
         switch (opt)
         {
@@ -1192,15 +1415,41 @@ int main(int argc, char *argv[])
                 start = 1;
                 printf("Start transient unit\n");
                 break;
+            case 'e':
+                enter = 1;
+                printf("Wait for enter\n");
+                break;
+            case '2':
+                do_fork = 1;
+                printf("Do fork after function\n");
+                break;
+            case 'i':
+                session_path = 1;
+                printf("Get login session path for current pid (%d)\n", getpid());
+                break;
+            case '1':
+                list_sessions = 1;
+                printf("List sessions\n");
+                break;
+            case '3':
+                create_session = 1;
+                uid = atoi(optarg);
+                printf("CreateSession for uid: %d\n", uid);
+                break;
             default:
                 print_opts();
                 return 1;
         }
     }
+    conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
+                          NULL, // GCancellable
+                          &err);
     if (add)
-        return gbus_add(argc, argv);
+        rc = gbus_add(argc, argv);
+    if (create_session)
+        rc = do_create_session();
     if (start)
-        return gbus_systemd(argc, argv);
+        rc = gbus_systemd(argc, argv);
     if ((linger) || (no_linger))
         return gbus_linger(linger);
     if (get_user)
@@ -1210,24 +1459,37 @@ int main(int argc, char *argv[])
     if (set_properties)
         return gbus_setproperties(argc, argv, uid);
     g_object_unref(conn);
+    if (do_fork)
+        fork();
+    if (session_path)
+        get_session_path();
+    if (list_sessions)
+        do_list_sessions();
     switch (test)
     {
         case none:
         default:
-            printf("You must specify an option\n");
-            print_opts();
-            return 1;
+            printf("No test specified\n");
+            break;      
         case cpu:
-            return cpu_load(60);
+            rc = cpu_load(60);
         case memory:
-            return mem_load();
+            rc = mem_load();
         case block_io:
-            return block_io_load();
+            rc = block_io_load();
         case block_read:
-            return block_read_load();
+            rc =  block_read_load();
         case block_write:
-            return block_write_load();
+            rc =  block_write_load();
         case tasks:
-            return tasks_load();
+            rc = tasks_load();
     }
+    if (enter)
+    {
+        printf("(%u) Press ENTER to end ->", getpid());
+        char input[80];
+        gets(input);
+    }
+    printf("gdbus end\n");
+    return rc;
 }

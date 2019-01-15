@@ -5,6 +5,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include "cgroupconn.h"
@@ -289,6 +290,15 @@ int main(int argc, char *argv[])
     }
     if (uid_set)
     {
+        int pid = fork();
+        if (pid)
+        {
+            int status;
+            printf("Parent pid of child: %u\n", pid);
+            waitpid(pid, &status, 0);
+            return status;
+        }
+        printf("Child pid: %d\n", getpid());
         class CGroupConn *conn = new CGroupConn();
         if (!conn)
         {
@@ -300,6 +310,7 @@ int main(int argc, char *argv[])
             printf("Error in applying connection: %s\n", conn->getErrorText());
             return 1;
         }
+        
         class CGroupUse *use = new CGroupUse(conn);
         if (!use)
         {
