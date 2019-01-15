@@ -17,10 +17,11 @@ enum tests
 };
 
 char file[256] = { 0 };
+char pgm[256] = { 0 };
 
 void use()
 {
-    printf("Usage: test [-u <uid>] [-cputest <secs>] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest]\n");
+    printf("Usage: test [-u <uid>] [-cputest <secs>] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest] [-execute <pgm>]\n");
 }
 
 
@@ -248,10 +249,14 @@ int main(int argc, char *argv[])
     enum tests test = none;
     printf("Entering cgroup test program\n");
     int uid_set = 0;
-    while ((opt = getopt(argc, argv, "u:c:mbr:w:f?")) != -1)
+    while ((opt = getopt(argc, argv, "e:u:c:mbr:w:f?")) != -1)
     {
         switch (opt)
         {
+            case 'e':
+                strcpy(pgm, optarg);
+                printf("Execute %s\n", pgm);
+                break;
             case 'u':
                 printf("Set uid to %u\n", uid = atoi(optarg));
                 uid_set = 1;
@@ -352,7 +357,19 @@ int main(int argc, char *argv[])
             tasks_load();
             break;
     }
-    
+    if (pgm[0])
+    {
+        FILE *fp = popen(pgm, "r");
+        if (fp == NULL)
+            printf("Error starting %s: %s\n", pgm, strerror(errno));
+        else
+        {
+            char out[1024];
+            while (fgets(out, sizeof(out), fp))
+                printf("OUTPUT: %s", out);
+            printf("Status: %d\n", pclose(fp));
+        }
+    }
     printf("Everything done.  I'm pid: %d.  Press enter to exit-> ", getpid());
     char input[80];
     gets(input);

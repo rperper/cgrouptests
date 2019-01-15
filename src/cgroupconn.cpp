@@ -42,6 +42,20 @@ int CGroupConn::create()
         return -1;
     }
 
+    proxy_login = g_dbus_proxy_new_sync(conn,
+                                        G_DBUS_PROXY_FLAGS_NONE,
+                                        NULL,                               /* GDBusInterfaceInfo */
+                                        "org.freedesktop.login1",           /* name */
+                                        "/org/freedesktop/login1",          /* object path */
+                                        "org.freedesktop.login1.Manager",   /* interface */
+                                        NULL,                               /* GCancellable */
+                                        &err);
+    if (err)
+    {
+        set_error(CERR_GDERR);
+        return -1;
+    }
+    
     return 0;
 };
 

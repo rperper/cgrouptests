@@ -17,6 +17,9 @@ class CGroupUse
 private:
     friend class CGroupConn;
     CGroupConn *conn;
+    int apply_slice();
+    int apply_session();
+    int m_uid;
 public:
     CGroupUse(CGroupConn *conn)
     { CGroupUse::conn = conn; }
