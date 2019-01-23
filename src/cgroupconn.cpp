@@ -10,52 +10,38 @@
 
 void CGroupConn::clear_err()
 {
-    if (!err)
+    if (!m_err)
         return;
-    g_clear_error(&err);
-    err_num = CERR_NO_ERROR;
+    g_clear_error(&m_err);
+    m_err_num = CERR_NO_ERROR;
 }    
     
 int CGroupConn::create()
 {
     clear_err();
-    conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
-                          NULL, // GCancellable
-                          &err);
-    if (err)
+    m_conn = g_bus_get_sync(G_BUS_TYPE_SYSTEM,
+                            NULL, // GCancellable
+                            &m_err);
+    if (m_err)
     {
         set_error(CERR_GDERR);
         return -1;
     }
     clear_err();
-    proxy = g_dbus_proxy_new_sync(conn,
-                                  G_DBUS_PROXY_FLAGS_NONE,
-                                  NULL,                                 /* GDBusInterfaceInfo */
-                                  "org.freedesktop.systemd1",           /* name */
-                                  "/org/freedesktop/systemd1",          /* object path */
-                                  "org.freedesktop.systemd1.Manager",   /* interface */
-                                  NULL,                                 /* GCancellable */
-                                  &err);
-    if (err)
+    m_proxy = g_dbus_proxy_new_sync(m_conn,
+                                    G_DBUS_PROXY_FLAGS_NONE,
+                                    NULL,                                 /* GDBusInterfaceInfo */
+                                    "org.freedesktop.systemd1",           /* name */
+                                    "/org/freedesktop/systemd1",          /* object path */
+                                    "org.freedesktop.systemd1.Manager",   /* interface */
+                                    NULL,                                 /* GCancellable */
+                                    &m_err);
+    if (m_err)
     {
         set_error(CERR_GDERR);
         return -1;
     }
 
-    proxy_login = g_dbus_proxy_new_sync(conn,
-                                        G_DBUS_PROXY_FLAGS_NONE,
-                                        NULL,                               /* GDBusInterfaceInfo */
-                                        "org.freedesktop.login1",           /* name */
-                                        "/org/freedesktop/login1",          /* object path */
-                                        "org.freedesktop.login1.Manager",   /* interface */
-                                        NULL,                               /* GCancellable */
-                                        &err);
-    if (err)
-    {
-        set_error(CERR_GDERR);
-        return -1;
-    }
-    
     return 0;
 };
 
@@ -64,29 +50,36 @@ CGroupConn::~CGroupConn()
 {
     /* Actually this is kind of unnecessary as these are dynamic pointers, but
      * I never really believe that.  */
-    if (proxy)
-        g_object_unref(proxy);
-    if (proxy_login)
-        g_object_unref(proxy_login);
-    if (conn)
-        g_object_unref(conn);
+    if (m_proxy)
+        g_object_unref(m_proxy);
+    if (m_conn)
+        g_object_unref(m_conn);
     clear_err();
 }
 
    
 char *CGroupConn::getErrorText()
 {
-    enum CGroupErrors errnum = err_num;
-    err_num = CERR_NO_ERROR;
+    enum CGroupErrors errnum = m_err_num;
     switch (errnum) 
     {
         case CERR_GDERR :
-            return err->message;
+            return m_err->message;
         case CERR_INSUFFICIENT_MEMORY:
             return (char *)"Insufficient memory";
+        case CERR_BAD_SYSTEMD:
+            return (char *)"systemd not at high enough level for cgroups";
+        case CERR_SYSTEM_ERROR:
+            return (char *)"system error prevented tests";
         case CERR_NO_ERROR :
         default:
             return NULL;
     }
     return NULL;
+}
+
+
+int CGroupConn::getErrorNum()
+{
+    return (int)m_err_num;
 }

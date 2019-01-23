@@ -4,7 +4,13 @@
 *    LiteSpeed Technologies Proprietary/Confidential.                       *
 ****************************************************************************/
 #include <unistd.h>
+#include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <pwd.h>
+#include <grp.h>
 #include <gio/gio.h>
 #include "cgroupuse.h"
 
@@ -22,11 +28,9 @@ int CGroupUse::apply_slice()
     snprintf(slice, sizeof(slice), "user-%u.slice", (unsigned int)m_uid);
     GVariant *pvarslice = g_variant_new("s", slice);
     g_variant_builder_add(properties, "(sv)", "Slice", pvarslice);
-    GVariant *pSIGHUP = g_variant_new("b", TRUE);
-    g_variant_builder_add(properties, "(sv)", "SendSIGHUP", pSIGHUP);
     char *fn = (char *)"StartTransientUnit";
     char unit[256];
-    snprintf(unit, sizeof(unit), "run-%u.scope", (unsigned int)getpid());
+    snprintf(unit, sizeof(unit), CUSE_UNIT_FORMAT, (unsigned int)getpid());
     GVariant *parms = g_variant_new("(ssa(sv)a(sa(sv)))",
                                     unit,
                                     "fail",
@@ -37,94 +41,24 @@ int CGroupUse::apply_slice()
     {
         // Note: These are supposed to be smart and deallocate when no longer
         // referenced.
-        conn->set_error(CGroupConn::CERR_INSUFFICIENT_MEMORY);
+        m_conn->set_error(CGroupConn::CERR_INSUFFICIENT_MEMORY);
         return -1;
     }
-    conn->clear_err();
-    g_dbus_proxy_call_sync(conn->proxy,
+    m_conn->clear_err();
+    g_dbus_proxy_call_sync(m_conn->m_proxy,
                            fn,
                            parms,
                            G_DBUS_CALL_FLAGS_NONE,
                            -1,   // Default timeout
                            NULL, // GCancellable
-                           &conn->err);// userdata
-    if (conn->err)
+                           &m_conn->m_err);// userdata
+    if (m_conn->m_err)
     {
-        conn->set_error(CGroupConn::CERR_GDERR);
+        m_conn->set_error(CGroupConn::CERR_GDERR);
         return -1;
     }
     return 0;
 }
-
-
-int CGroupUse::apply_session()
-{
-    char *fn = (char *)"CreateSession";
-
-    GVariant *parms = g_variant_new("(uusssssussbssa(sv))",
-                                    m_uid,                //uid
-                                    getpid(),           //pid
-                                    "",                 //service
-                                    "unspecified",      //"unspecified"type = getenv("XDG_SESSION_TYPE");
-                                    "background",             //class (could be "user")
-                                    "",                 //desktop = getenv("XDG_SESSION_DESKTOP");
-                                    "",                 //seat = getenv("XDG_SEAT");
-                                    0,                  //atoi(cvtnr = getenv("XDG_VTNR"));
-                                    "",                 //tty
-                                    "",                 //display = tty
-                                    0,                  //remote
-                                    "",                 //remote_user
-                                    "",                 //remote_host
-                                    NULL);              //properties
-    
-    GVariant *rc = g_dbus_proxy_call_sync(conn->proxy_login,
-                                          fn,
-                                          parms,
-                                          G_DBUS_CALL_FLAGS_NONE,
-                                          -1,   // Default timeout
-                                          NULL, // GCancellable
-                                          &conn->err);
-    if (conn->err)
-    {
-        conn->set_error(CGroupConn::CERR_GDERR);
-        return -1;
-    }
-    /*
-        {
-            char *session_id;
-            char *object_path;
-            char *runtime_path;
-            short session_fd;
-            int   original_uid;
-            char *seat;
-            int   vtnr;
-            int   existing;
-        
-            printf("%s returned no error", fn);
-            g_variant_get(rc,"(soshusub)",
-                          &session_id,
-                          &object_path,
-                          &runtime_path,
-                          &session_fd,
-                          &original_uid,
-                          &seat,
-                          &vtnr,
-                          &existing);
-            
-            printf("%s output:\n", fn);
-            printf("   session_id   : %s\n", session_id);
-            printf("   object_path  : %s\n", object_path);
-            printf("   runtime_path : %s\n", runtime_path);
-            printf("   session_fd   : %u\n", session_fd);
-            printf("   original_uid : %u\n", original_uid);
-            printf("   seat         : %s\n", seat);
-            printf("   vtnr         : %u\n", vtnr);
-            printf("   existing     : %s\n", existing ? "YES" : "NO");
-        }
-    */
-    return 0;
-}
-
 
 
 int CGroupUse::apply(int uid)
@@ -132,7 +66,66 @@ int CGroupUse::apply(int uid)
     int rc;
     m_uid = uid;
     rc = apply_slice();
-    if (!rc)
-        rc = apply_session();
     return rc;
 }
+
+
+int CGroupUse::child_validate(pid_t pid)
+{
+    char proc_file[128];
+    FILE *fd;
+    
+    snprintf(proc_file, sizeof(proc_file) - 1, "/proc/%d/cgroup", pid);
+    fd = fopen(proc_file, (char *)"r");
+    if (!fd)
+        return (int)CGroupConn::CERR_SYSTEM_ERROR;
+#define CUSE_LINE_LEN   256
+    char line[CUSE_LINE_LEN];
+    char line_hoped[CUSE_LINE_LEN];
+    int  found = 0;
+    int  compare_len;
+    compare_len = snprintf(line_hoped, sizeof(line_hoped), 
+                           "1:name=systemd:/user.slice/user-%u.slice/", m_uid);
+    while ((!found) && (fgets(line, sizeof(line) - 1, fd)))
+    {
+        if (!(strncmp(line, line_hoped, compare_len)))
+            found = 1;
+    }
+    fclose(fd);
+    if (found)
+        return 0;
+    return -1;
+}
+
+
+int CGroupUse::validate()
+{
+    m_conn->clear_err();
+    struct passwd *pw = getpwuid(m_uid);
+    if (pw)
+    {
+        printf("For user: %d, found group: %d\n", m_uid, pw->pw_gid);
+        setgid(pw->pw_gid);
+        initgroups(pw->pw_name, pw->pw_gid);
+    }
+    seteuid(m_uid);
+    setuid(m_uid);
+    int pid = fork();
+    if (pid == -1)
+    {
+        m_conn->set_error(CGroupConn::CERR_SYSTEM_ERROR);
+        return -1;
+    }
+    if (pid == 0)
+    {
+        // child!
+        exit(execl("/bin/sleep", "/bin/sleep", "60", NULL));
+    }
+    // Parent!
+    int rc = child_validate(pid);
+    kill(pid, 9);
+    int session;
+    waitpid(pid, &session, 0); 
+    return rc;
+}
+

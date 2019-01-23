@@ -21,7 +21,7 @@ char pgm[256] = { 0 };
 
 void use()
 {
-    printf("Usage: test [-u <uid>] [-cputest <secs>] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest] [-execute <pgm>]\n");
+    printf("Usage: test [-u <uid>] [-cputest <secs>] [-memorytest] [-blockiotest] [-readstest <file>] [-writestest <file>] [-forkstest] [-execute <pgm>] [-validate]\n");
 }
 
 
@@ -103,7 +103,7 @@ int block_io_load(void)
     char *file_output = (char *)"write.data";
     int fd_output = open(file_output, O_WRONLY | O_CREAT, 0666);
 
-    while (!error)
+    while (!error) 
     {
         int len;
         count = 0;
@@ -159,7 +159,7 @@ int block_read_load()
     long start_time;
     long current_time;
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_REALTIME, &ts);   
     start_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
     if (fd == -1)
     {
@@ -175,7 +175,7 @@ int block_read_load()
             current_time = ts.tv_sec * 1000000000 + ts.tv_nsec;
             printf("%ld reads, %lu chars/sec\n", count, (1000000000000000000) / (current_time - start_time));
             start_time = current_time;
-        }
+        } 
     }
     close(fd);
     return 0;
@@ -246,10 +246,11 @@ int main(int argc, char *argv[])
     int uid = getuid();
     char opt;
     int secs;
+    int validate = 0;
     enum tests test = none;
     printf("Entering cgroup test program\n");
     int uid_set = 0;
-    while ((opt = getopt(argc, argv, "e:u:c:mbr:w:f?")) != -1)
+    while ((opt = getopt(argc, argv, "ve:u:c:mbr:w:f?")) != -1)
     {
         switch (opt)
         {
@@ -287,6 +288,10 @@ int main(int argc, char *argv[])
                 printf("Forks test\n");
                 test = tasks;
                 break;
+            case 'v':
+                printf("Validate test\n");
+                validate = 1;
+                break;
             case '?':
             default:
                 use();
@@ -301,6 +306,7 @@ int main(int argc, char *argv[])
             int status;
             printf("Parent pid of child: %u\n", pid);
             waitpid(pid, &status, 0);
+            printf("Parent rc of child: %d\n", WEXITSTATUS(status));
             return status;
         }
         printf("Child pid: %d\n", getpid());
@@ -309,7 +315,7 @@ int main(int argc, char *argv[])
         {
             printf("Error creating connection\n");
             return 1;
-        }
+        } 
         if (conn->create())
         {
             printf("Error in applying connection: %s\n", conn->getErrorText());
@@ -322,10 +328,28 @@ int main(int argc, char *argv[])
             printf("Error in creating use class: %s\n", conn->getErrorText());
             return 1;
         }
+            
         if (use->apply(uid))
         {
             printf("Error in applying use class: %s\n", conn->getErrorText());
             return 1;
+        }
+        if (validate) 
+        {
+            int rc = 0;
+            if (use->validate() == 0)
+            {
+                printf("VALID FOR THIS OS\n");
+            }
+            else
+            {
+                printf("VALIDATE FAILED\n");
+                rc = 1;
+            }
+            printf("Child pausing, pid: %d ->", getpid());
+            char input[80];
+            gets(input);
+            return rc;
         }
         if (seteuid(uid))
         {
@@ -333,6 +357,8 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
+    else if (validate)
+        printf("Validate meaningless without setuid first (-u)\n");
     switch (test)
     {
         case none:
@@ -368,10 +394,10 @@ int main(int argc, char *argv[])
             while (fgets(out, sizeof(out), fp))
                 printf("OUTPUT: %s", out);
             printf("Status: %d\n", pclose(fp));
-        }
+        }  
     }
     printf("Everything done.  I'm pid: %d.  Press enter to exit-> ", getpid());
     char input[80];
     gets(input);
     return 0;
-}
+}  
